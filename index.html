@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Unwind</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#e9e4d4;--dim:#9a9483;--gold:#e8c26a;--bad:#e0675a;--panel:rgba(12,16,13,.78)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0b0e0c;color:var(--ink);font-family:Inter,system-ui,sans-serif;overflow:hidden;user-select:none}
+canvas{position:fixed;inset:0;display:block;cursor:crosshair}
+.hud{position:fixed;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:flex-start;padding:14px 18px;pointer-events:none;gap:12px}
+.brand{font-family:Cinzel,serif;font-size:20px;letter-spacing:.2em;color:var(--gold)}
+.brand small{display:block;font-family:Inter,sans-serif;font-size:11px;letter-spacing:.06em;color:var(--dim)}
+.timer{font-family:Cinzel,serif;font-size:34px;font-variant-numeric:tabular-nums;text-align:center;min-width:90px}
+.timer.low{color:var(--bad)}
+.prog{text-align:right;font-size:13px;color:var(--dim);line-height:1.5;min-width:170px}
+.prog b{color:var(--ink)}
+.bar{width:170px;height:5px;background:#222;border-radius:3px;overflow:hidden;margin:2px 0 6px auto}
+.bar i{display:block;height:100%;background:var(--gold);transition:width .3s}
+.bar.avg i{background:#6d7a8a}
+.vitals{position:fixed;left:18px;bottom:16px;pointer-events:none;font-size:13px;color:var(--dim);background:var(--panel);padding:10px 12px;border-radius:10px;width:220px}
+.vitals .row{display:flex;justify-content:space-between;gap:14px;line-height:1.6}
+.vitals b{color:var(--ink);font-variant-numeric:tabular-nums}
+.stress{height:6px;border-radius:3px;background:linear-gradient(90deg,#4f8f5c,#c9a84a,#b8483d);position:relative;margin-top:8px}
+.stress i{position:absolute;top:-4px;width:3px;height:14px;background:#fff;border-radius:2px;left:0;transform:translateX(-1px)}
+.status{margin-top:7px;font-size:11px}
+.status.bad{color:var(--bad)}
+.dev{position:fixed;right:18px;bottom:16px;background:var(--panel);padding:10px 12px;border-radius:10px;font-size:12px;color:var(--dim);width:250px}
+.dev label{display:flex;align-items:center;gap:8px;margin-top:6px}
+.dev input[type=range]{flex:1}
+kbd{background:#2a2f2a;border-radius:4px;padding:0 4px;color:var(--ink)}
+.screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,9,7,.55)}
+.card{max-width:540px;width:calc(100% - 32px);background:rgba(16,21,17,.94);border:1px solid #2b3a2e;border-radius:16px;padding:28px 28px 24px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.card h1{font-family:Cinzel,serif;font-size:46px;letter-spacing:.18em;margin:0;color:var(--gold)}
+.card h2{font-family:Cinzel,serif;font-size:26px;margin:0 0 8px;color:var(--gold)}
+.card p{color:#c9c3b2;line-height:1.55;font-size:15px}
+.card .sub{font-style:italic;color:var(--dim);margin-top:4px}
+.btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:18px}
+button{font:600 14px Inter,sans-serif;padding:11px 18px;border-radius:10px;border:1px solid #3c4d40;background:#1c261e;color:var(--ink);cursor:pointer}
+button.primary{background:var(--gold);color:#1a1405;border-color:var(--gold)}
+button:hover{filter:brightness(1.12)}
+.note{font-size:12px;color:var(--dim);margin-top:14px}
+.err{color:var(--bad);font-size:13px;min-height:1em;margin-top:10px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;text-align:left;margin:14px auto 0;max-width:360px;font-size:14px;color:var(--dim)}
+.stats b{color:var(--ink);float:right}
+.hidden{display:none!important}
+.toast{position:fixed;left:50%;top:84px;transform:translateX(-50%);font-family:Cinzel,serif;color:#d39a88;font-size:18px;opacity:0;transition:opacity .3s;pointer-events:none;text-shadow:0 2px 8px #000}
+.toast.on{opacity:1}
+.keys{position:fixed;right:18px;top:118px;font-size:11px;color:#6b6759;pointer-events:none;text-align:right}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud">
+  <div class="brand">UNWIND<small id="lvl">breathe to disentangle</small></div>
+  <div class="timer" id="timer"></div>
+  <div class="prog" id="prog"></div>
+</div>
+
+<div class="vitals hidden" id="vitals">
+  <div class="row"><span>Heart rate</span><b id="vHR">–</b></div>
+  <div class="row"><span>HRV (RMSSD)</span><b id="vHRV">–</b></div>
+  <div class="row"><span>Baseline</span><b id="vBase">–</b></div>
+  <div class="stress"><i id="vStress"></i></div>
+  <div class="status" id="vStatus">No sensor</div>
+</div>
+
+<div class="dev hidden" id="dev">
+  <b style="color:var(--ink)">Simulated heart</b>
+  <label>Stress <input type="range" id="simS" min="0" max="1" step="0.01" value="0.15"><span id="simSv">0.15</span></label>
+  <label><input type="checkbox" id="simAuto" checked> Auto — hold <kbd>Space</kbd> to breathe</label>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="keys hidden" id="keys">D debug · M mute · B breathing guide</div>
+
+<div class="screen" id="scrMenu"><div class="card">
+  <h1>UNWIND</h1><div class="sub">breathe to disentangle</div>
+  <p>Break the seals in order — <b>1 → A → 2 → B → 3 → C …</b> — before time runs out.
+  A snare feeds on your stress and creeps across the stone. Struggle and it tightens. Breathe slowly and it lets go.</p>
+  <div class="btns"><button class="primary" id="bConnect">Connect Polar H10</button><button id="bSim">Play with a simulated heart</button></div>
+  <div class="err" id="menuErr"></div>
+  <div class="note">Needs Chrome or Edge with Bluetooth, opened from localhost or https. Wet the strap's electrodes before putting it on.</div>
+</div></div>
+
+<div class="screen hidden" id="scrCalib"><div class="card">
+  <h2>Finding your calm</h2>
+  <p>Sit comfortably, let go of the mouse and breathe normally. Measuring your resting heart rhythm.</p>
+  <div class="timer" id="calibT">60</div>
+  <div class="note" id="calibInfo"></div>
+</div></div>
+
+<div class="screen hidden" id="scrReady"><div class="card">
+  <h2 id="readyTitle">Level 1</h2><p id="readyText"></p>
+  <div class="btns"><button class="primary" id="bBegin">Begin</button></div>
+</div></div>
+
+<div class="screen hidden" id="scrResult"><div class="card">
+  <h2 id="resTitle"></h2><p id="resText"></p>
+  <div class="stats" id="resStats"></div>
+  <div class="btns"><button class="primary" id="bNext">Next level</button><button id="bRetry">Retry</button><button id="bRecal">Recalibrate</button></div>
+</div></div>
+
+<script>
+'use strict';
+// ---------- utils ----------
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const rand = (a = 1, b) => b === undefined ? Math.random() * a : a + Math.random() * (b - a);
+const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+const median = a => { const b = [...a].sort((x, y) => x - y); return b[b.length >> 1]; };
+const gauss = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+function rmssd(a) { let s = 0; for (let i = 1; i < a.length; i++) { const d = a[i] - a[i - 1]; s += d * d; } return Math.sqrt(s / (a.length - 1)); }
+function hash(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+function noise1(x) { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return hash(i) * (1 - u) + hash(i + 1) * u; }
+
+// ---------- canvas & coverage grid ----------
+const cv = $('c'), ctx = cv.getContext('2d');
+const CELL = 36;
+let W, H, DPR, GW, GH, dens, dens2, fogImg;
+const fogC = document.createElement('canvas'), fogX = fogC.getContext('2d');
+const bgC = document.createElement('canvas');
+
+function resize() {
+  DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  GW = Math.ceil(W / CELL); GH = Math.ceil(H / CELL);
+  dens = new Float32Array(GW * GH); dens2 = new Float32Array(GW * GH);
+  fogC.width = GW; fogC.height = GH; fogImg = fogX.createImageData(GW, GH);
+  makeBg();
+}
+function makeBg() {
+  bgC.width = W * DPR; bgC.height = H * DPR;
+  const b = bgC.getContext('2d'); b.scale(DPR, DPR);
+  const g = b.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.7);
+  g.addColorStop(0, '#1d241e'); g.addColorStop(1, '#070908');
+  b.fillStyle = g; b.fillRect(0, 0, W, H);
+  // flagstones
+  b.strokeStyle = 'rgba(0,0,0,.35)'; b.lineWidth = 2;
+  const s = 130, rh = s * 0.7;
+  for (let r = 0, y = 0; y < H + rh; r++, y += rh) {
+    b.beginPath(); b.moveTo(0, y); b.lineTo(W, y); b.stroke();
+    for (let x = r % 2 ? -s / 2 : 0; x < W; x += s) { b.beginPath(); b.moveTo(x, y); b.lineTo(x, y + rh); b.stroke(); }
+  }
+  for (let i = 0; i < W * H / 700; i++) {
+    b.fillStyle = `rgba(255,255,255,${rand(0.008, 0.03)})`;
+    b.fillRect(rand(W), rand(H), rand(1, 2.5), rand(1, 2.5));
+  }
+}
+addEventListener('resize', resize); resize();
+
+// ---------- audio ----------
+let AC = null, muted = false;
+function tone(f, dur, { type = 'sine', vol = 0.1, to = null, delay = 0 } = {}) {
+  if (muted) return;
+  try {
+    AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+    const t = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    if (to) o.frequency.exponentialRampToValueAtTime(to, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(AC.destination); o.start(t); o.stop(t + dur + 0.05);
+  } catch (e) {}
+}
+const sfx = {
+  tick: () => tone(2200, 0.03, { type: 'square', vol: 0.02 }),
+  chime: () => { tone(784, 0.35, { vol: 0.09 }); tone(1175, 0.4, { vol: 0.06, delay: 0.06 }); },
+  buzz: () => tone(140, 0.35, { type: 'sawtooth', vol: 0.08, to: 70 }),
+  thump: v => tone(70, 0.16, { vol: v, to: 38 }),
+  tighten: () => tone(95, 0.3, { type: 'triangle', vol: 0.1, to: 50 }),
+};
+
+// ---------- heart signal -> stress ----------
+// RR intervals (ms) come from the Polar strap or the simulator. Stress combines heart rate
+// above the calm baseline with the drop in short-window HRV (RMSSD) below it.
+const Heart = {
+  rr: [], calib: null, base: null, hr: 0, rmssd: 0, raw: 0, lastBeat: 0, rejStreak: 0, sensorHR: 0,
+  push(rr) {
+    if (rr < 300 || rr > 2000) return this.reject();
+    if (this.rr.length >= 5) { const m = median(this.rr.slice(-5)); if (Math.abs(rr - m) / m > 0.3) return this.reject(); }
+    this.rejStreak = 0;
+    this.rr.push(rr); if (this.rr.length > 60) this.rr.shift();
+    if (this.calib) this.calib.push(rr);
+    this.lastBeat = performance.now(); this.compute();
+    return true;
+  },
+  reject() { if (++this.rejStreak >= 5) { this.rr = []; this.rejStreak = 0; } return false; },
+  compute() {
+    const w = this.rr.slice(-16); if (w.length < 4) return;
+    this.hr = 60000 / mean(w); this.rmssd = rmssd(w);
+    if (this.base) {
+      const hrT = clamp((this.hr - this.base.hr) / 15, 0, 1);
+      const hrvT = clamp((1 - this.rmssd / this.base.rmssd) / 0.6, 0, 1);
+      this.raw = clamp((0.5 * hrT + 0.5 * hrvT - 0.08) / 0.92, 0, 1); // small dead zone around baseline
+    }
+  },
+  finishCalib() { const c = this.calib; this.calib = null; this.base = { hr: 60000 / mean(c), rmssd: Math.max(12, rmssd(c)) }; },
+};
+
+let mode = null, deviceName = '';
+async function connectPolar() {
+  if (!navigator.bluetooth) throw new Error('Web Bluetooth is not available here. Use desktop Chrome or Edge, opened from localhost or https.');
+  const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
+  dev.addEventListener('gattserverdisconnected', () => { deviceName = ''; });
+  const server = await dev.gatt.connect();
+  const ch = await (await server.getPrimaryService('heart_rate')).getCharacteristic('heart_rate_measurement');
+  ch.addEventListener('characteristicvaluechanged', e => parseHR(e.target.value));
+  await ch.startNotifications();
+  deviceName = dev.name || 'Polar';
+}
+// Bluetooth Heart Rate Measurement (0x2A37): flags, HR (u8/u16), [energy u16], RR list (u16, 1/1024 s)
+function parseHR(dv) {
+  const f = dv.getUint8(0); let i = 1;
+  const wide = f & 1; Heart.sensorHR = wide ? dv.getUint16(i, true) : dv.getUint8(i); i += wide ? 2 : 1;
+  if (f & 0x08) i += 2;
+  let got = false;
+  if (f & 0x10) for (; i + 1 < dv.byteLength; i += 2) if (Heart.push(dv.getUint16(i, true) * 1000 / 1024)) got = true;
+  if (got) onBeat();
+}
+
+const Sim = {
+  stress: 0.15, auto: true, phase: 0, timer: 0,
+  start() {
+    clearTimeout(this.timer);
+    const loop = () => {
+      const s = this.stress, base = 60000 / (62 + 38 * s);
+      this.phase += base / 1000 * 2 * Math.PI / (5.5 - 2.5 * s); // breathing gets faster under stress
+      const rr = clamp(base + (55 * (1 - s) + 5) * Math.sin(this.phase) + gauss() * (10 * (1 - s) + 3), 320, 1800);
+      if (Heart.push(rr)) onBeat();
+      this.timer = setTimeout(loop, rr);
+    };
+    loop();
+  },
+};
+
+// ---------- game state ----------
+let state = 'menu', T = 0, stressS = 0, struggle = 0, debug = false, guideMode = 'auto', lastBeatT = -10;
+const mouse = { x: -999, y: -999, speed: 0, lt: 0 };
+const keys = {};
+const LEVELS = [
+  { pairs: 8, time: 60, drift: 0 },
+  { pairs: 10, time: 70, drift: 0 },
+  { pairs: 12, time: 80, drift: 12 },
+  { pairs: 13, time: 85, drift: 22 },
+];
+const SEAL_R = 24, LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', TOP = 100, PAD = 50;
+let level = 0, G = null;
+
+function onBeat() {
+  lastBeatT = T;
+  if (state === 'play') sfx.thump(0.03 + 0.15 * stressS);
+}
+
+function blockedSpot(x, y) {
+  if (x < 270 && y > H - 150) return true;                    // vitals panel
+  if (mode === 'sim' && x > W - 290 && y > H - 130) return true; // sim panel
+  return Math.abs(x - W / 2) < 60 && y > H - 110;             // breathing guide
+}
+function makeRun(n) {
+  const L = LEVELS[Math.min(n, LEVELS.length - 1)], extra = Math.max(0, n - LEVELS.length + 1);
+  const seals = [], minD = SEAL_R * 3.2;
+  for (let k = 0; k < L.pairs * 2; k++) {
+    const label = k % 2 ? LETTERS[k >> 1] : String((k >> 1) + 1);
+    let x, y, tries = 0;
+    do { x = rand(PAD, W - PAD); y = rand(TOP, H - PAD - 60); tries++; }
+    while (tries < 500 && (blockedSpot(x, y) || seals.some(s => Math.hypot(s.x - x, s.y - y) < minD)));
+    const a = rand(Math.PI * 2), sp = L.drift * (1 + extra * 0.2);
+    seals.push({ x, y, label, i: k, done: false, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, flash: 0 });
+  }
+  const time = Math.round(L.time * Math.max(0.7, 1 - extra * 0.05));
+  return { seals, total: seals.length, progress: 0, time, timeLeft: time, elapsed: 0, drift: L.drift > 0,
+           mistakes: 0, grabs: 0, stressSum: 0, calmT: 0, peakCov: 0, tickAcc: 0, lastClick: -1 };
+}
+
+// ---------- the snare ----------
+// Vines grow from the edges, branch, steer toward upcoming seals (or the cursor when the player
+// thrashes) and spiral around them. Coverage of a coarse grid is driven toward a stress-based
+// target: below it the tips grow, above it the outermost branches wilt and retract tip-first.
+const STEP = 5, W0 = [13, 9, 6, 4];
+const maxPts = () => clamp(W * H / 72, 6000, 18000) | 0; // enough vine to smother the screen
+let vines = [], totalPts = 0, spawnCool = 0, particles = [], cov = 0, covTarget = 0;
+const tmpP = new Float32Array(2 * 512);
+
+function newVine(x, y, a, gen, parent, anchor) {
+  const v = { pts: [{ x, y, leaf: 0, ls: 0 }], a, gen, parent, anchor, depth: parent ? parent.depth + anchor : 0,
+    children: [], seed: rand(1000), maxLen: gen === 0 ? rand(150, 300) : rand(40, 110) / Math.sqrt(gen),
+    curl: Math.random() < 0.5 ? 1 : -1, target: null, retarget: 0, wilt: 0, dormant: false, acc: 0, w0: W0[gen] };
+  if (parent) parent.children.push(v);
+  vines.push(v); totalPts++;
+  return v;
+}
+function spawnRoot() {
+  const side = Math.floor(rand(4)); let x, y, a;
+  if (side === 0) { x = rand(W); y = -4; a = Math.PI / 2; }
+  else if (side === 1) { x = W + 4; y = rand(H); a = Math.PI; }
+  else if (side === 2) { x = rand(W); y = H + 4; a = -Math.PI / 2; }
+  else { x = -4; y = rand(H); a = 0; }
+  newVine(x, y, a + rand(-0.5, 0.5), 0, null, 0);
+}
+function removeVine(v) {
+  vines.splice(vines.indexOf(v), 1); totalPts -= v.pts.length;
+  if (v.parent) v.parent.children.splice(v.parent.children.indexOf(v), 1);
+}
+function pickTarget(v) {
+  v.retarget = rand(1.5, 3.5);
+  if (state !== 'play') { v.target = null; return; }
+  if (struggle > 0.2 && Math.random() < struggle * 0.8) { v.target = mouse; return; }
+  // half the vines hunt the next few seals, the rest spread over any unbroken seal
+  const left = G.seals.filter(s => !s.done);
+  const pool = Math.random() < 0.5 ? left.filter(s => s.i < G.progress + 4) : left;
+  v.target = pool.length && Math.random() < 0.85 ? pool[Math.floor(rand(pool.length))] : null;
+}
+function widthAt(v, i, n) {
+  const base = v.w0 * (1 - 0.35 * v.wilt);
+  return 1 + (base - 1) * Math.pow(1 - i / n, 0.7);
+}
+function growStep(v) {
+  const n = v.pts.length, tip = v.pts[n - 1];
+  let da = (noise1(v.seed + T * 0.7) - 0.5) * 0.5;
+  const tg = v.target;
+  if (tg) {
+    const dx = tg.x - tip.x, dy = tg.y - tip.y, d = Math.hypot(dx, dy), want = Math.atan2(dy, dx);
+    if (d < SEAL_R + 50) da += angDiff(want + v.curl * (Math.PI / 2 - (d > SEAL_R + 14 ? 0.35 : -0.25)), v.a) * 0.3; // orbit
+    else da += angDiff(want, v.a) * (tg === mouse ? 0.14 : 0.06);
+  }
+  const m = 30;
+  if (n > 3 && (tip.x < m || tip.x > W - m || tip.y < m || tip.y > H - m)) {
+    const inward = Math.atan2(H / 2 - tip.y, W / 2 - tip.x);
+    if (Math.cos(angDiff(inward, v.a)) < 0.3) da += angDiff(inward, v.a) * 0.15;
+  }
+  v.a += da;
+  const leaf = n % 8 === 0 ? (n % 16 === 0 ? 1 : -1) : 0;
+  const p = { x: tip.x + Math.cos(v.a) * STEP, y: tip.y + Math.sin(v.a) * STEP, leaf, ls: leaf ? rand(0.7, 1.3) : 0 };
+  v.pts.push(p); totalPts++;
+  if (v.gen < 3 && n > 10 && n < v.maxLen - 8 && Math.random() < 0.03)
+    newVine(p.x, p.y, v.a + (Math.random() < 0.5 ? -1 : 1) * rand(0.5, 1.1), v.gen + 1, v, v.pts.length - 1);
+  if (v.pts.length >= v.maxLen) v.dormant = true;
+}
+function computeCoverage() {
+  dens.fill(0);
+  for (const v of vines) {
+    const n = v.pts.length;
+    for (let i = 0; i < n; i += 2) {
+      const p = v.pts[i], cx = (p.x / CELL) | 0, cy = (p.y / CELL) | 0;
+      if (cx < 0 || cy < 0 || cx >= GW || cy >= GH) continue;
+      dens[cy * GW + cx] += 0.6 + widthAt(v, i, n) * 0.08 + (p.leaf ? 0.6 : 0);
+    }
+  }
+  let c = 0;
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    let s = 0, k = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= GW || yy >= GH) continue;
+      const wgt = dx === 0 && dy === 0 ? 4 : dx === 0 || dy === 0 ? 2 : 1;
+      s += dens[yy * GW + xx] * wgt; k += wgt;
+    }
+    dens2[y * GW + x] = s / k;
+    if (dens[y * GW + x] >= 1.5) c++;
+  }
+  cov = c / (GW * GH);
+}
+function updateVines(dt) {
+  computeCoverage();
+  covTarget = clamp(0.03 + 0.82 * Math.pow(stressS, 1.4) + struggle * 0.12, 0, 0.93);
+  for (const v of vines) { v.retarget -= dt; if (v.retarget <= 0) pickTarget(v); }
+  if (cov < covTarget - 0.015 && totalPts < maxPts()) {
+    const diff = clamp((covTarget - cov) * 3, 0, 1);
+    let active = vines.filter(v => !v.dormant);
+    spawnCool -= dt;
+    if (active.length < 3 + stressS * 12 && spawnCool <= 0) { spawnRoot(); spawnCool = 0.35; active = vines.filter(v => !v.dormant); }
+    const sp = (8 + 50 * diff) * Math.min(1, 12 / Math.max(1, active.length));
+    for (const v of vines) v.wilt = Math.max(0, v.wilt - dt * 0.8);
+    for (const v of active) {
+      v.acc += dt * sp * (v.target === mouse ? 1.6 : 1);
+      while (v.acc >= 1 && !v.dormant && totalPts < maxPts()) { v.acc -= 1; growStep(v); }
+    }
+  } else if (cov > covTarget + 0.03) {
+    const diff = clamp((cov - covTarget) * 3, 0, 1);
+    const ends = vines.filter(v => v.children.length === 0);
+    const sp = (8 + 70 * diff) * Math.min(1, 25 / Math.max(1, ends.length));
+    for (const v of ends) {
+      v.wilt = Math.min(1, v.wilt + dt * 1.2); v.acc += dt * sp; v.dormant = false;
+      while (v.acc >= 1) {
+        v.acc -= 1;
+        const p = v.pts.pop(); totalPts--;
+        if (p.leaf && Math.random() < 0.5)
+          particles.push({ x: p.x, y: p.y, vx: rand(-20, 20), vy: rand(10, 40), r: rand(6.28), vr: rand(-3, 3), life: 1, s: p.ls });
+        if (v.pts.length <= 1) { removeVine(v); break; }
+      }
+    }
+  } else {
+    for (const v of vines) { v.wilt = Math.max(0, v.wilt - dt * 0.3); v.acc = 0; }
+  }
+}
+function vineHit(x, y) {
+  for (const v of vines) {
+    const n = v.pts.length;
+    for (let i = 0; i < n; i++) {
+      const w = widthAt(v, i, n); if (w < 3) continue;
+      const p = v.pts[i], dx = p.x - x, dy = p.y - y, r = w / 2 + 3;
+      if (dx * dx + dy * dy < r * r) return true;
+    }
+  }
+  return false;
+}
+
+// ---------- drawing ----------
+function drawSeals() {
+  const S = G.seals;
+  ctx.strokeStyle = 'rgba(232,194,106,.45)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+  ctx.beginPath();
+  for (let k = 1; k < G.progress; k++) { ctx.moveTo(S[k - 1].x, S[k - 1].y); ctx.lineTo(S[k].x, S[k].y); }
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '700 18px Cinzel, serif';
+  for (const s of S) {
+    const hover = !s.done && Math.hypot(mouse.x - s.x, mouse.y - s.y) < SEAL_R + 4;
+    const g = ctx.createRadialGradient(s.x - 6, s.y - 8, 2, s.x, s.y, SEAL_R);
+    if (s.done) { g.addColorStop(0, '#ffe6a3'); g.addColorStop(1, '#b8892f'); }
+    else { g.addColorStop(0, '#4a4f47'); g.addColorStop(1, '#23271f'); }
+    if (s.done) { ctx.shadowColor = 'rgba(255,210,120,.6)'; ctx.shadowBlur = 16 * (0.5 + s.flash); }
+    ctx.beginPath(); ctx.arc(s.x, s.y, SEAL_R, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = s.flash < -0.05 ? `rgba(224,103,90,${-s.flash})` : hover ? '#cfc6a6' : s.done ? '#f3d58a' : '#6a6656';
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(s.x, s.y, SEAL_R - 5, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = s.done ? '#2a1d05' : '#e9e4d4'; ctx.fillText(s.label, s.x, s.y + 1);
+  }
+}
+function drawFog() {
+  const d = fogImg.data;
+  for (let i = 0; i < GW * GH; i++) {
+    const a = clamp((dens2[i] - 0.6) / 4, 0, 1);
+    d[i * 4] = 7; d[i * 4 + 1] = 15; d[i * 4 + 2] = 9; d[i * 4 + 3] = a * 215;
+  }
+  fogX.putImageData(fogImg, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(fogC, 0, 0, GW * CELL, GH * CELL);
+}
+function drawLight() {
+  const calm = Heart.base ? 1 - stressS : 0;
+  if (calm < 0.02) return;
+  const r = (0.25 + 0.5 * calm) * Math.max(W, H);
+  const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, r);
+  g.addColorStop(0, `rgba(255,228,170,${0.09 * calm})`); g.addColorStop(1, 'rgba(255,228,170,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function drawVines() {
+  const since = T - lastBeatT, pulse = Math.exp(-since * 2.2), wave = since * 160;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const v of vines) {
+    const n = v.pts.length; if (n < 2) continue;
+    const w = v.wilt, r = 30 + 62 * w, g = 80 - 12 * w, b = 36 + 4 * w;
+    const P = tmpP;
+    for (let i = 0; i < n; i++) {
+      const p = v.pts[i], dep = v.depth + i, amp = Math.min(3.5, dep * 0.03) * (1 - 0.5 * w);
+      P[i * 2] = p.x + Math.sin(T * 1.3 + p.y * 0.013 + dep * 0.02) * amp;
+      P[i * 2 + 1] = p.y + Math.cos(T * 1.1 + p.x * 0.013 + dep * 0.02) * amp;
+    }
+    const styles = [`rgb(${r * 0.35 | 0},${g * 0.35 | 0},${b * 0.35 | 0})`, `rgb(${r | 0},${g | 0},${b | 0})`, `rgba(${r + 70 | 0},${g + 80 | 0},${b + 40 | 0},.45)`];
+    for (let pass = 0; pass < 3; pass++) {
+      ctx.strokeStyle = styles[pass];
+      for (let i = 0; i < n - 1; i += 4) {
+        const j = Math.min(n - 1, i + 4), mi = (i + j) / 2;
+        let wd = widthAt(v, mi, n) * (1 + 0.45 * pulse * Math.exp(-((((v.depth + mi) - wave) / 9) ** 2)));
+        if (pass === 2) { if (wd < 4) continue; wd *= 0.25; } else if (pass === 0) wd += 2.5;
+        ctx.lineWidth = wd;
+        ctx.beginPath(); ctx.moveTo(P[i * 2], P[i * 2 + 1]);
+        for (let k = i + 1; k <= j; k++) ctx.lineTo(P[k * 2], P[k * 2 + 1]);
+        ctx.stroke();
+      }
+    }
+    // leaves
+    ctx.fillStyle = `rgb(${50 + 85 * w | 0},${106 - 6 * w | 0},${48 + 12 * w | 0})`;
+    ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1;
+    for (let i = 8; i < n - 1; i += 8) {
+      const p = v.pts[i]; if (!p.leaf) continue;
+      let a = Math.atan2(P[i * 2 + 3] - P[i * 2 - 1], P[i * 2 + 2] - P[i * 2 - 2]) + p.leaf * 1.0;
+      a += angDiff(Math.PI / 2, a) * 0.6 * w; // droop when wilting
+      const len = p.ls * (4 + 8 * Math.min(1, (n - i) / 30)) * (1 - 0.3 * w);
+      ctx.save(); ctx.translate(P[i * 2], P[i * 2 + 1]); ctx.rotate(a);
+      ctx.beginPath(); ctx.ellipse(len * 0.55, 0, len * 0.6, len * 0.26, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save(); ctx.globalAlpha = p.life * 0.8; ctx.translate(p.x, p.y); ctx.rotate(p.r);
+    ctx.fillStyle = '#8a7444'; ctx.beginPath(); ctx.ellipse(0, 0, 6 * p.s, 2.6 * p.s, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+let guideA = 0;
+function drawGuide() {
+  const want = guideMode === 'on' || (guideMode === 'auto' && state === 'play' && stressS > 0.35);
+  guideA += ((want ? 1 : 0) - guideA) * 0.04;
+  if (guideA < 0.01) return;
+  // ~6 breaths/min: 4.5 s in, 0.5 s hold, 5 s out
+  const ph = (T % 10) / 10, e = ph < 0.45 ? ph / 0.45 : ph < 0.5 ? 1 : 1 - (ph - 0.5) / 0.5;
+  const k = 0.5 - 0.5 * Math.cos(Math.PI * e), x = W / 2, y = H - 62, r = 10 + 20 * k;
+  ctx.globalAlpha = guideA;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.2);
+  g.addColorStop(0, 'rgba(255,230,170,.55)'); g.addColorStop(1, 'rgba(255,230,170,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,236,190,.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#d9cfae'; ctx.font = '12px Inter, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(ph < 0.45 ? 'breathe in' : ph < 0.5 ? 'hold' : 'breathe out', x, y + 48);
+  ctx.globalAlpha = 1;
+}
+let fps = 60;
+function drawDebug() {
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(W / 2 - 170, 64, 340, 22);
+  ctx.fillStyle = '#9fe0a8'; ctx.font = '12px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(`cov ${(cov * 100) | 0}% → ${(covTarget * 100) | 0}%  pts ${totalPts}  vines ${vines.length}  struggle ${struggle.toFixed(2)}  ${fps | 0}fps`, W / 2, 75);
+}
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.drawImage(bgC, 0, 0, W, H);
+  if (G && (state === 'play' || state === 'result')) drawSeals();
+  drawFog(); drawLight(); drawVines(); drawParticles(); drawGuide();
+  if (debug) drawDebug();
+}
+
+// ---------- HUD & screens ----------
+const screens = ['scrMenu', 'scrCalib', 'scrReady', 'scrResult'];
+function show(id) { for (const s of screens) $(s).classList.toggle('hidden', s !== id); }
+let toastT = 0;
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 1100); }
+let hudAcc = 0;
+function updateHUD(dt) {
+  if ((hudAcc += dt) < 0.1) return; hudAcc = 0;
+  const playing = G && (state === 'play' || state === 'result');
+  $('timer').textContent = playing ? (G.timeLeft < 10 ? G.timeLeft.toFixed(1) : Math.ceil(G.timeLeft)) : '';
+  $('timer').classList.toggle('low', playing && G.timeLeft < 10);
+  $('lvl').textContent = playing ? `Level ${level + 1}` : 'breathe to disentangle';
+  if (playing) {
+    const avg = G.progress === G.total ? G.total
+      : Math.min(G.total, Math.max(G.progress + 1 + (G.progress % 4 === 0 ? 1 : 0), Math.floor(G.elapsed / (G.time * 0.72) * G.total)));
+    $('prog').innerHTML = `You <b>${G.progress}</b>/${G.total}<div class="bar"><i style="width:${G.progress / G.total * 100}%"></i></div>` +
+      `Average player <b>${avg}</b>/${G.total}<div class="bar avg"><i style="width:${avg / G.total * 100}%"></i></div>`;
+  } else $('prog').innerHTML = '';
+  $('vHR').textContent = Heart.hr ? Math.round(Heart.hr) + ' bpm' : '–';
+  $('vHRV').textContent = Heart.rmssd ? Math.round(Heart.rmssd) + ' ms' : '–';
+  $('vBase').textContent = Heart.base ? `${Math.round(Heart.base.hr)} bpm · ${Math.round(Heart.base.rmssd)} ms` : '–';
+  $('vStress').style.left = (stressS * 100) + '%';
+  const st = $('vStatus'), quiet = (performance.now() - Heart.lastBeat) / 1000;
+  if (mode === 'sim') { st.textContent = 'Simulated heart'; st.className = 'status'; }
+  else if (!deviceName) { st.textContent = 'Sensor disconnected'; st.className = 'status bad'; }
+  else if (quiet > 4) { st.textContent = `No beats for ${quiet | 0}s — wet the electrodes, tighten the strap`; st.className = 'status bad'; }
+  else { st.textContent = `Connected: ${deviceName}`; st.className = 'status'; }
+  if (mode === 'sim') { $('simS').value = Sim.stress; $('simSv').textContent = Sim.stress.toFixed(2); }
+}
+
+let calibLeft = 0;
+function startCalib() {
+  Heart.calib = []; Heart.base = null; stressS = 0;
+  calibLeft = mode === 'sim' ? 12 : 60;
+  state = 'calib'; show('scrCalib');
+}
+function updateCalib(dt) {
+  calibLeft -= dt;
+  $('calibT').textContent = Math.ceil(Math.max(0, calibLeft));
+  const need = mode === 'sim' ? 10 : 40;
+  $('calibInfo').textContent = `${Heart.calib.length} beats · ` + (Heart.hr ? `${Math.round(Heart.hr)} bpm` : 'waiting for signal…') +
+    (calibLeft <= 0 && Heart.calib.length < need ? ' · need a few more clean beats' : '');
+  if (calibLeft <= 0 && Heart.calib.length >= need) { Heart.finishCalib(); Heart.compute(); toReady(); }
+}
+function toReady() {
+  G = makeRun(level); state = 'ready';
+  $('readyTitle').textContent = `Level ${level + 1}`;
+  $('readyText').innerHTML =
+    `Break all <b>${G.total} seals</b> in order — 1 → A → 2 → B … — within <b>${G.time} s</b>. ` +
+    `A wrong seal costs 3 s.${G.drift ? ' <b>The seals drift.</b>' : ''}<br><br>` +
+    `The snare grows as your stress rises. Clicking it only makes it tighten. Slow your breathing and it withers — a calm hand slips right through.`;
+  show('scrReady');
+}
+function begin() { if (state !== 'ready') return; state = 'play'; show(null); for (const v of vines) v.retarget = 0; }
+function endRun(win) {
+  state = 'result';
+  const used = G.elapsed;
+  $('resTitle').textContent = win ? 'The seals are broken' : 'The snare holds';
+  const avgS = G.stressSum / Math.max(1, used);
+  $('resText').textContent = win
+    ? (avgS < 0.3 ? 'Steady hands, steady heart.' : 'You made it — but the snare had you for a while.')
+    : 'When the vines close in, stop clicking. Three slow breaths and the snare lets go faster than you think.';
+  const row = (k, v) => `<div>${k} <b>${v}</b></div>`;
+  $('resStats').innerHTML = row('Time used', used.toFixed(1) + ' s') + row('Seals', `${G.progress}/${G.total}`) +
+    row('Wrong seals', G.mistakes) + row('Snare grabs', G.grabs) +
+    row('Average stress', Math.round(avgS * 100) + '%') + row('Time calm', Math.round(G.calmT / Math.max(1, used) * 100) + '%') +
+    row('Peak coverage', Math.round(G.peakCov * 100) + '%');
+  $('bNext').classList.toggle('hidden', !win);
+  show('scrResult');
+}
+function updateRun(dt) {
+  G.elapsed += dt; G.timeLeft -= dt;
+  G.stressSum += stressS * dt; if (stressS < 0.3) G.calmT += dt;
+  G.peakCov = Math.max(G.peakCov, cov);
+  for (const s of G.seals) {
+    s.flash *= Math.exp(-dt * 3);
+    if (s.done) continue;
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    if (s.x < PAD || s.x > W - PAD) { s.vx *= -1; s.x = clamp(s.x, PAD, W - PAD); }
+    if (s.y < TOP || s.y > H - PAD - 60) { s.vy *= -1; s.y = clamp(s.y, TOP, H - PAD - 60); }
+  }
+  G.tickAcc += dt;
+  if (G.tickAcc >= (G.timeLeft > 20 ? 1 : G.timeLeft > 10 ? 0.5 : 0.25)) { G.tickAcc = 0; sfx.tick(); }
+  if (G.timeLeft <= 0) { G.timeLeft = 0; endRun(false); }
+}
+function simAuto(dt) {
+  if (!Sim.auto) return;
+  let s = Sim.stress;
+  if (state === 'play') s += dt * (0.012 + 0.04 * (1 - G.timeLeft / G.time) + 0.12 * struggle);
+  else s -= dt * 0.03;
+  if (keys.space) s -= dt * 0.16;
+  Sim.stress = clamp(s, 0.05, 1);
+}
+
+// ---------- input ----------
+cv.addEventListener('pointerdown', e => {
+  if (state !== 'play') return;
+  const x = e.clientX, y = e.clientY;
+  if (T - G.lastClick < 0.25) struggle = Math.min(1, struggle + 0.1);
+  G.lastClick = T;
+  if (stressS > 0.25 && vineHit(x, y)) { // a calm hand slips through the snare
+    struggle = Math.min(1, struggle + 0.25); G.grabs++; sfx.tighten(); toast('The snare tightens…');
+    if (mode === 'sim' && Sim.auto) Sim.stress = clamp(Sim.stress + 0.03, 0, 1);
+    return;
+  }
+  for (const s of G.seals) {
+    if (s.done || Math.hypot(s.x - x, s.y - y) > SEAL_R + 4) continue;
+    if (s.i === G.progress) {
+      s.done = true; s.flash = 1; G.progress++; sfx.chime();
+      if (G.progress === G.total) endRun(true);
+    } else {
+      s.flash = -1; G.mistakes++; G.timeLeft = Math.max(0, G.timeLeft - 3); sfx.buzz(); toast('−3 s');
+      if (mode === 'sim' && Sim.auto) Sim.stress = clamp(Sim.stress + 0.07, 0, 1);
+    }
+    return;
+  }
+});
+addEventListener('pointermove', e => {
+  const t = performance.now() / 1000;
+  if (mouse.x > -900) mouse.speed = mouse.speed * 0.8 + Math.hypot(e.clientX - mouse.x, e.clientY - mouse.y) / Math.max(0.008, t - mouse.lt) * 0.2;
+  mouse.x = e.clientX; mouse.y = e.clientY; mouse.lt = t;
+});
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { keys.space = true; e.preventDefault(); }
+  const k = e.key.toLowerCase();
+  if (k === 'd') debug = !debug;
+  if (k === 'm') { muted = !muted; toast(muted ? 'Muted' : 'Sound on'); }
+  if (k === 'b') { guideMode = { auto: 'on', on: 'off', off: 'auto' }[guideMode]; toast('Breathing guide: ' + guideMode); }
+});
+addEventListener('keyup', e => { if (e.code === 'Space') keys.space = false; });
+
+$('bConnect').onclick = async () => {
+  $('menuErr').textContent = '';
+  try {
+    await connectPolar(); mode = 'polar';
+    $('vitals').classList.remove('hidden'); $('keys').classList.remove('hidden');
+    startCalib();
+  } catch (e) {
+    $('menuErr').textContent = e.name === 'NotFoundError' ? 'No sensor selected.' : e.message;
+  }
+};
+$('bSim').onclick = () => {
+  mode = 'sim'; Sim.start();
+  for (const id of ['vitals', 'dev', 'keys']) $(id).classList.remove('hidden');
+  startCalib();
+};
+$('simS').oninput = e => { Sim.stress = +e.target.value; };
+$('simAuto').onchange = e => { Sim.auto = e.target.checked; };
+$('bBegin').onclick = begin;
+$('bNext').onclick = () => { level++; toReady(); };
+$('bRetry').onclick = toReady;
+$('bRecal').onclick = startCalib;
+
+// ---------- main loop ----------
+let lastT = performance.now();
+function frame(now) {
+  step(clamp((now - lastT) / 1000, 0, 0.05)); lastT = now;
+  requestAnimationFrame(frame);
+}
+function step(dt) {
+  T += dt;
+  fps = fps * 0.95 + (1 / Math.max(dt, 0.001)) * 0.05;
+  if (Heart.base) stressS += (Heart.raw - stressS) * (1 - Math.exp(-dt / 2.5));
+  struggle *= Math.exp(-dt / 2.5);
+  if (state === 'play') struggle = Math.min(1, struggle + dt * Math.max(0, (mouse.speed - 1400) / 2500));
+  mouse.speed *= Math.exp(-dt * 4);
+  if (mode === 'sim') simAuto(dt);
+  if (state === 'calib') updateCalib(dt);
+  if (state === 'play') updateRun(dt);
+  if (Heart.base) updateVines(dt);
+  for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 30 * dt; p.r += p.vr * dt; p.life -= dt * 0.6; }
+  particles = particles.filter(p => p.life > 0);
+  render(); updateHUD(dt);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
