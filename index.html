@@ -186,7 +186,7 @@ const Heart = {
     this.rejStreak = 0;
     this.rr.push(rr); if (this.rr.length > 60) this.rr.shift();
     if (this.calib) this.calib.push(rr);
-    this.lastBeat = performance.now(); this.compute();
+    this.lastBeat = performance.now(); this.compute(); Breath.beat(rr, T);
     return true;
   },
   reject() { if (++this.rejStreak >= 5) { this.rr = []; this.rejStreak = 0; } return false; },
@@ -223,14 +223,49 @@ function parseHR(dv) {
   if (got) onBeat();
 }
 
+// Slow-breath detection from respiratory sinus arrhythmia: beats spread out on the out-breath and
+// bunch up on the in-breath, so each slow, deep breath shows up as a large wave in the RR series.
+// A breath counts when one full wave (rising crossing to rising crossing) has a guide-like period
+// and a clearly larger swing than resting variability.
+const BREATH_IN = 5.5, BREATH_OUT = 5.5, BREATHS_TO_RELEASE = 2;
+const Breath = {
+  base: 0, x: 0, sign: 0, lastUp: -1, lo: 0, hi: 0, count: 0, releaseT: -1,
+  beat(rr, t) {
+    const dt = rr / 1000;
+    if (!this.base) this.base = rr;
+    this.base += (rr - this.base) * (1 - Math.exp(-dt / 8)); // slow trend (heart rate drift)
+    this.x += (rr - this.base - this.x) * (1 - Math.exp(-dt)); // breathing wave, beat noise smoothed out
+    this.lo = Math.min(this.lo, this.x); this.hi = Math.max(this.hi, this.x);
+    if (this.sign <= 0 && this.x > 6) { // beats spreading out again: an out-breath has begun
+      if (this.lastUp >= 0) this.cycle(t - this.lastUp, this.hi - this.lo);
+      this.lastUp = t; this.sign = 1; this.lo = this.hi = this.x;
+    } else if (this.sign >= 0 && this.x < -6) this.sign = -1;
+    if (this.lastUp >= 0 && t - this.lastUp > 16) { this.lastUp = -1; this.miss(); }
+  },
+  cycle(period, swing) {
+    const target = BREATH_IN + BREATH_OUT, minSwing = clamp(Heart.base ? Heart.base.rmssd : 40, 30, 80);
+    if (Math.abs(period - target) > 3 || swing < minSwing) return this.miss();
+    if (++this.count === BREATHS_TO_RELEASE) { this.releaseT = T; if (state === 'play') toast('The snare lets go…'); }
+  },
+  miss() { this.count = 0; this.releaseT = -1; },
+  reset() { this.base = this.x = this.sign = 0; this.lastUp = -1; this.miss(); },
+  get released() { return this.count >= BREATHS_TO_RELEASE; },
+};
+
 const Sim = {
-  stress: 0.15, auto: true, phase: 0, timer: 0,
+  stress: 0.15, auto: true, phase: 0, timer: 0, breathing: false,
+  nextRR() {
+    const s = this.stress, base = 60000 / (62 + 38 * s);
+    // breathing quickens under stress; holding Space breathes slowly and deeply with the guide
+    const period = this.breathing ? BREATH_IN + BREATH_OUT : 5.5 - 2.5 * s;
+    const swing = this.breathing ? 70 + 30 * (1 - s) : 55 * (1 - s) + 5;
+    this.phase += base / 1000 * 2 * Math.PI / period;
+    return clamp(base + swing * Math.sin(this.phase) + gauss() * (10 * (1 - s) + 3), 320, 1800);
+  },
   start() {
     clearTimeout(this.timer);
     const loop = () => {
-      const s = this.stress, base = 60000 / (62 + 38 * s);
-      this.phase += base / 1000 * 2 * Math.PI / (5.5 - 2.5 * s); // breathing gets faster under stress
-      const rr = clamp(base + (55 * (1 - s) + 5) * Math.sin(this.phase) + gauss() * (10 * (1 - s) + 3), 320, 1800);
+      const rr = this.nextRR();
       if (Heart.push(rr)) onBeat();
       this.timer = setTimeout(loop, rr);
     };
@@ -270,7 +305,8 @@ function makeRun(n) {
     do { x = rand(PAD, W - PAD); y = rand(TOP, H - PAD - 60); tries++; }
     while (tries < 500 && (blockedSpot(x, y) || seals.some(s => Math.hypot(s.x - x, s.y - y) < minD)));
     const a = rand(Math.PI * 2), sp = L.drift * (1 + extra * 0.2);
-    seals.push({ x, y, label, i: k, done: false, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, flash: 0 });
+    seals.push({ x, y, label, i: k, done: false, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, flash: 0,
+                 open: 0, sym: Math.floor(rand(SYMBOLS.length)), symRot: rand(Math.PI * 2) });
   }
   const time = Math.round(L.time * Math.max(0.7, 1 - extra * 0.05));
   return { seals, total: seals.length, progress: 0, time, timeLeft: time, elapsed: 0, drift: L.drift > 0,
@@ -367,6 +403,9 @@ function computeCoverage() {
 function updateVines(dt) {
   computeCoverage();
   covTarget = clamp(0.03 + 0.82 * Math.pow(stressS, 1.4) + struggle * 0.12, 0, 0.93);
+  // after the slow breaths the target decays exponentially to nothing, whatever the stress reading says
+  const releasing = Breath.released;
+  if (releasing) covTarget *= Math.exp(-(T - Breath.releaseT) / 0.6);
   for (const v of vines) { v.retarget -= dt; if (v.retarget <= 0) pickTarget(v); }
   if (cov < covTarget - 0.015 && totalPts < maxPts()) {
     const diff = clamp((covTarget - cov) * 3, 0, 1);
@@ -384,11 +423,13 @@ function updateVines(dt) {
     const ends = vines.filter(v => v.children.length === 0);
     const sp = (8 + 70 * diff) * Math.min(1, 25 / Math.max(1, ends.length));
     for (const v of ends) {
-      v.wilt = Math.min(1, v.wilt + dt * 1.2); v.acc += dt * sp; v.dormant = false;
+      // when released, each tip loses a fixed fraction of its length per second: exponential decay
+      v.wilt = Math.min(1, v.wilt + dt * (releasing ? 3 : 1.2)); v.dormant = false;
+      v.acc += dt * (releasing ? Math.max(sp, v.pts.length * 1.8) : sp);
       while (v.acc >= 1) {
         v.acc -= 1;
         const p = v.pts.pop(); totalPts--;
-        if (p.leaf && Math.random() < 0.5)
+        if (p.leaf && particles.length < 400 && Math.random() < 0.5)
           particles.push({ x: p.x, y: p.y, vx: rand(-20, 20), vy: rand(10, 40), r: rand(6.28), vr: rand(-3, 3), life: 1, s: p.ls });
         if (v.pts.length <= 1) { removeVine(v); break; }
       }
@@ -430,7 +471,29 @@ function drawSeals() {
     ctx.stroke();
     ctx.beginPath(); ctx.arc(s.x, s.y, SEAL_R - 5, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 1; ctx.stroke();
     ctx.fillStyle = s.done ? '#2a1d05' : '#e9e4d4'; ctx.fillText(s.label, s.x, s.y + 1);
+    if (s.open < 0.99) drawCover(s);
   }
+}
+// Covers hide each seal's label until the cursor rests on it. The faint symbol on the lid is a
+// landmark for remembering where you saw a label, kept at low contrast so it takes a moment to spot.
+const SYMBOLS = [
+  r => { for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? r * 0.42 : r; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); }, // star
+  r => { ctx.arc(0, 0, r, 0.6, Math.PI * 2 - 0.6); ctx.arc(r * 0.45, 0, r * 0.75, Math.PI * 2 - 1.05, 1.05, true); ctx.closePath(); }, // crescent
+  r => { for (let k = 0; k < 3; k++) { const a = -Math.PI / 2 + k * 2 * Math.PI / 3; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); } ctx.closePath(); }, // triangle
+  r => { ctx.moveTo(0, -r); ctx.lineTo(r * 0.7, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.7, 0); ctx.closePath(); }, // diamond
+  r => { ctx.arc(0, 0, r * 0.75, 0, Math.PI * 2); ctx.moveTo(0, -r); ctx.lineTo(0, r); ctx.moveTo(-r, 0); ctx.lineTo(r, 0); }, // sun cross
+];
+function drawCover(s) {
+  const a = 1 - s.open, lift = 1 + 0.25 * s.open;
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(s.x, s.y); ctx.scale(lift, lift);
+  const g = ctx.createRadialGradient(-5, -7, 2, 0, 0, SEAL_R + 1);
+  g.addColorStop(0, '#41463d'); g.addColorStop(1, '#1d2119');
+  ctx.beginPath(); ctx.arc(0, 0, SEAL_R + 1, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = s.flash < -0.05 ? `rgba(224,103,90,${-s.flash})` : '#5a5749'; ctx.stroke();
+  ctx.rotate(s.symRot);
+  ctx.beginPath(); SYMBOLS[s.sym](SEAL_R * 0.48);
+  ctx.lineWidth = 1.6; ctx.strokeStyle = 'rgba(214,200,160,.32)'; ctx.stroke();
+  ctx.restore();
 }
 function drawFog() {
   const d = fogImg.data;
@@ -443,7 +506,7 @@ function drawFog() {
   ctx.drawImage(fogC, 0, 0, GW * CELL, GH * CELL);
 }
 function drawLight() {
-  const calm = Heart.base ? 1 - stressS : 0;
+  const calm = Heart.base ? Math.max(1 - stressS, Breath.released ? 0.85 : 0) : 0;
   if (calm < 0.02) return;
   const r = (0.25 + 0.5 * calm) * Math.max(W, H);
   const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, r);
@@ -498,11 +561,12 @@ function drawParticles() {
 }
 let guideA = 0;
 function drawGuide() {
-  const want = guideMode === 'on' || (guideMode === 'auto' && state === 'play' && stressS > 0.35);
+  const want = guideMode === 'on' || (guideMode === 'auto' && state === 'play' && (stressS > 0.35 || Breath.count > 0));
   guideA += ((want ? 1 : 0) - guideA) * 0.04;
   if (guideA < 0.01) return;
-  // ~6 breaths/min: 4.5 s in, 0.5 s hold, 5 s out
-  const ph = (T % 10) / 10, e = ph < 0.45 ? ph / 0.45 : ph < 0.5 ? 1 : 1 - (ph - 0.5) / 0.5;
+  // ~5.5 breaths/min: BREATH_IN s in, BREATH_OUT s out
+  const t = T % (BREATH_IN + BREATH_OUT), inhale = t < BREATH_IN;
+  const e = inhale ? t / BREATH_IN : 1 - (t - BREATH_IN) / BREATH_OUT;
   const k = 0.5 - 0.5 * Math.cos(Math.PI * e), x = W / 2, y = H - 62, r = 10 + 20 * k;
   ctx.globalAlpha = guideA;
   const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.2);
@@ -510,7 +574,14 @@ function drawGuide() {
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,236,190,.8)'; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = '#d9cfae'; ctx.font = '12px Inter, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText(ph < 0.45 ? 'breathe in' : ph < 0.5 ? 'hold' : 'breathe out', x, y + 48);
+  ctx.fillText(inhale ? 'breathe in' : 'breathe out', x, y + 48);
+  // one dot per detected slow breath; all lit means the snare is letting go
+  for (let i = 0; i < BREATHS_TO_RELEASE; i++) {
+    const dx = x + (i - (BREATHS_TO_RELEASE - 1) / 2) * 12;
+    ctx.beginPath(); ctx.arc(dx, y + 60, 3.5, 0, Math.PI * 2);
+    if (i < Breath.count) { ctx.fillStyle = '#f3d58a'; ctx.fill(); }
+    else { ctx.strokeStyle = 'rgba(217,207,174,.6)'; ctx.lineWidth = 1; ctx.stroke(); }
+  }
   ctx.globalAlpha = 1;
 }
 let fps = 60;
@@ -559,7 +630,7 @@ function updateHUD(dt) {
 
 let calibLeft = 0;
 function startCalib() {
-  Heart.calib = []; Heart.base = null; stressS = 0;
+  Heart.calib = []; Heart.base = null; stressS = 0; Breath.reset();
   calibLeft = mode === 'sim' ? 12 : 60;
   state = 'calib'; show('scrCalib');
 }
@@ -576,8 +647,8 @@ function toReady() {
   $('readyTitle').textContent = `Level ${level + 1}`;
   $('readyText').innerHTML =
     `Break all <b>${G.total} seals</b> in order — 1 → A → 2 → B … — within <b>${G.time} s</b>. ` +
-    `A wrong seal costs 3 s.${G.drift ? ' <b>The seals drift.</b>' : ''}<br><br>` +
-    `The snare grows as your stress rises. Clicking it only makes it tighten. Slow your breathing and it withers — a calm hand slips right through.`;
+    `The seals are covered: rest the cursor on one to lift its lid. A wrong seal costs 3 s.${G.drift ? ' <b>The seals drift.</b>' : ''}<br><br>` +
+    `The snare grows as your stress rises. Clicking it only makes it tighten. Follow the light: ${BREATH_IN} s in, ${BREATH_OUT} s out. After ${BREATHS_TO_RELEASE} slow breaths the snare lets go.`;
   show('scrReady');
 }
 function begin() { if (state !== 'ready') return; state = 'play'; show(null); for (const v of vines) v.retarget = 0; }
@@ -603,7 +674,10 @@ function updateRun(dt) {
   G.peakCov = Math.max(G.peakCov, cov);
   for (const s of G.seals) {
     s.flash *= Math.exp(-dt * 3);
-    if (s.done) continue;
+    if (s.done) { s.open = 1; continue; }
+    // the lid lifts quickly under the cursor and settles back a little slower once it leaves
+    const over = Math.hypot(mouse.x - s.x, mouse.y - s.y) < SEAL_R + 4;
+    s.open = over ? s.open + (1 - s.open) * (1 - Math.exp(-dt * 14)) : s.open * Math.exp(-dt * 3.5);
     s.x += s.vx * dt; s.y += s.vy * dt;
     if (s.x < PAD || s.x > W - PAD) { s.vx *= -1; s.x = clamp(s.x, PAD, W - PAD); }
     if (s.y < TOP || s.y > H - PAD - 60) { s.vy *= -1; s.y = clamp(s.y, TOP, H - PAD - 60); }
@@ -627,7 +701,7 @@ cv.addEventListener('pointerdown', e => {
   const x = e.clientX, y = e.clientY;
   if (T - G.lastClick < 0.25) struggle = Math.min(1, struggle + 0.1);
   G.lastClick = T;
-  if (stressS > 0.25 && vineHit(x, y)) { // a calm hand slips through the snare
+  if (stressS > 0.25 && !Breath.released && vineHit(x, y)) { // a calm hand slips through the snare
     struggle = Math.min(1, struggle + 0.25); G.grabs++; sfx.tighten(); toast('The snare tightens…');
     if (mode === 'sim' && Sim.auto) Sim.stress = clamp(Sim.stress + 0.03, 0, 1);
     return;
@@ -650,13 +724,13 @@ addEventListener('pointermove', e => {
   mouse.x = e.clientX; mouse.y = e.clientY; mouse.lt = t;
 });
 addEventListener('keydown', e => {
-  if (e.code === 'Space') { keys.space = true; e.preventDefault(); }
+  if (e.code === 'Space') { keys.space = Sim.breathing = true; e.preventDefault(); }
   const k = e.key.toLowerCase();
   if (k === 'd') debug = !debug;
   if (k === 'm') { muted = !muted; toast(muted ? 'Muted' : 'Sound on'); }
   if (k === 'b') { guideMode = { auto: 'on', on: 'off', off: 'auto' }[guideMode]; toast('Breathing guide: ' + guideMode); }
 });
-addEventListener('keyup', e => { if (e.code === 'Space') keys.space = false; });
+addEventListener('keyup', e => { if (e.code === 'Space') keys.space = Sim.breathing = false; });
 
 $('bConnect').onclick = async () => {
   $('menuErr').textContent = '';
